@@ -163,3 +163,67 @@ def test_rotated_page_keeps_orientation(tmp_path):
     scan(src, tmp_path / "out.pdf", dpi=72, seed=0)
     assert _page_sizes(tmp_path / "out.pdf") == [pytest.approx((842, 595))]
     assert render_pdf_page(tmp_path / "out.pdf").shape == (595, 842, 3)
+
+
+def test_case_insensitive_path_does_not_overwrite_input(tmp_path):
+    src = make_text_pdf(tmp_path / "in.pdf")
+    if not (tmp_path / "IN.pdf").exists():
+        pytest.skip("case-sensitive filesystem")
+    before = src.read_bytes()
+    with pytest.raises(ScannizerError, match="same"):
+        scan(src, tmp_path / "IN.pdf", dpi=72)
+    assert src.read_bytes() == before
+
+
+def test_output_path_is_directory(tmp_path):
+    src = make_text_pdf(tmp_path / "in.pdf")
+    (tmp_path / "outdir").mkdir()
+    with pytest.raises(ScannizerError, match="directory"):
+        scan(src, tmp_path / "outdir", dpi=72)
+
+
+def test_unwritable_output_dir(tmp_path):
+    import os
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    src = make_text_pdf(tmp_path / "in.pdf")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o500)
+    try:
+        with pytest.raises(ScannizerError, match="cannot write"):
+            scan(src, locked / "out.pdf", dpi=72)
+    finally:
+        locked.chmod(0o700)
+
+
+def test_output_permissions_follow_umask(tmp_path):
+    import os
+
+    src = make_text_pdf(tmp_path / "in.pdf")
+    dst = tmp_path / "out.pdf"
+    scan(src, dst, dpi=72)
+    umask = os.umask(0)
+    os.umask(umask)
+    assert dst.stat().st_mode & 0o777 == 0o666 & ~umask
+
+
+def test_damaged_page_reports_scannizer_error(tmp_path, monkeypatch):
+    import pypdfium2 as pdfium_mod
+
+    src = make_text_pdf(tmp_path / "in.pdf")
+
+    def broken(self, *args, **kwargs):
+        raise pdfium_mod.PdfiumError("render failed")
+
+    monkeypatch.setattr(pdfium_mod.PdfPage, "render", broken)
+    with pytest.raises(ScannizerError, match="damaged"):
+        scan(src, tmp_path / "out.pdf", dpi=72)
+    assert not (tmp_path / "out.pdf").exists()
+
+
+def test_page_too_large_for_jpeg(tmp_path):
+    src = make_text_pdf(tmp_path / "wide.pdf", sizes=[(14000, 100)], text="x")
+    with pytest.raises(ScannizerError, match="too large"):
+        scan(src, tmp_path / "out.pdf", dpi=600)
