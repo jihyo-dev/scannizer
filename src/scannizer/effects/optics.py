@@ -5,7 +5,7 @@ import math
 import cv2
 import numpy as np
 
-from .common import scale_px, smooth_noise, to_float, to_uint8
+from .common import apply_shade, scale_px, smooth_noise
 
 
 def apply_edge_shadow(
@@ -15,15 +15,18 @@ def apply_edge_shadow(
     if strength <= 0:
         return img
     h, w = img.shape[:2]
-    ys = np.arange(h, dtype=np.float32)[:, None]
-    xs = np.arange(w, dtype=np.float32)[None, :]
+    ys = np.arange(h, dtype=np.float32)
+    xs = np.arange(w, dtype=np.float32)
     width = max(1.0, scale_px(60.0, dpi))
     depth = 0.35 * strength
-    shade = np.ones((h, w), dtype=np.float32)
-    for dist in (ys, h - 1 - ys, xs, w - 1 - xs):
+    # The shade is separable: a per-row factor times a per-column factor.
+    row = np.ones(h, dtype=np.float32)
+    col = np.ones(w, dtype=np.float32)
+    for dist, axis in ((ys, row), (h - 1 - ys, row), (xs, col), (w - 1 - xs, col)):
         edge_strength = depth * rng.uniform(0.3, 1.0)
-        shade *= 1.0 - edge_strength * np.exp(-dist / width)
-    return to_uint8(to_float(img) * shade[..., None])
+        axis *= 1.0 - edge_strength * np.exp(-dist / width)
+    shade = row[:, None] * col[None, :]
+    return apply_shade(img, shade)
 
 
 def apply_unevenness(img: np.ndarray, rng: np.random.Generator, strength: float) -> np.ndarray:
@@ -35,10 +38,15 @@ def apply_unevenness(img: np.ndarray, rng: np.random.Generator, strength: float)
     theta = rng.uniform(0, 2 * math.pi)
     ys = (np.arange(h, dtype=np.float32) / max(h - 1, 1) - 0.5)[:, None]
     xs = (np.arange(w, dtype=np.float32) / max(w - 1, 1) - 0.5)[None, :]
-    gradient = xs * math.cos(theta) + ys * math.sin(theta)  # [-0.7, 0.7]
-    mottle = smooth_noise(rng, (h, w), cells=4)
-    shade = 1.0 - strength * 0.12 * (1.0 + 0.8 * gradient + 0.5 * mottle) / 2.3
-    return to_uint8(to_float(img) * shade[..., None])
+    # shade = 1 - strength * 0.12 * (1 + 0.8 * gradient + 0.5 * mottle) / 2.3, in place
+    shade = smooth_noise(rng, (h, w), cells=4)  # mottle
+    shade *= 0.5
+    shade += (0.8 * math.cos(theta)) * xs
+    shade += (0.8 * math.sin(theta)) * ys
+    shade += 1.0
+    shade *= -strength * 0.12 / 2.3
+    shade += 1.0
+    return apply_shade(img, shade)
 
 
 def apply_blur(img: np.ndarray, sigma: float, dpi: int) -> np.ndarray:

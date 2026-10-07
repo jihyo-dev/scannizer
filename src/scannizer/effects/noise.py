@@ -8,7 +8,15 @@ def apply_noise(img: np.ndarray, rng: np.random.Generator, strength: float) -> n
     if strength <= 0:
         return img
     h, w = img.shape[:2]
-    luma = rng.normal(0.0, 12.0 * strength, size=(h, w, 1)).astype(np.float32)
-    chroma = rng.normal(0.0, 3.0 * strength, size=(h, w, img.shape[2])).astype(np.float32)
-    out = img.astype(np.float32) + luma + chroma
-    return np.clip(np.rint(out), 0, 255).astype(np.uint8)
+    out = img.astype(np.float32)
+    luma = rng.standard_normal(size=(h, w, 1), dtype=np.float32)
+    luma *= 12.0 * strength
+    out += luma
+    del luma
+    for c in range(img.shape[2]):  # one channel at a time keeps the peak at one extra plane
+        chroma = rng.standard_normal(size=(h, w), dtype=np.float32)
+        chroma *= 3.0 * strength
+        out[..., c] += chroma
+    np.rint(out, out=out)
+    np.clip(out, 0, 255, out=out)
+    return out.astype(np.uint8)

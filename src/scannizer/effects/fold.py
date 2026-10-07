@@ -4,7 +4,7 @@ import math
 
 import numpy as np
 
-from .common import scale_px, to_float, to_uint8
+from .common import apply_shade, scale_px
 
 _PATTERNS: dict[str, tuple[float, ...]] = {
     "none": (),
@@ -36,16 +36,20 @@ def apply_fold(
         center = frac * h + rng.uniform(-0.01, 0.01) * h
         tilt = math.tan(math.radians(rng.uniform(-0.2, 0.2)))
         d = ys - (center + tilt * (xs - w / 2))  # signed distance from the crease
-        dark = np.exp(-np.clip(-d, 0, None) / band) * (d <= 0)
-        light = np.exp(-np.clip(d, 0, None) / (band * 1.5)) * (d > 0)
-        shade *= 1.0 - strength * 0.35 * dark + strength * 0.06 * light
+        # Above the crease (d <= 0): dark band exp(d / band); below: light band exp(-d / 1.5 band).
+        np.multiply(d, np.where(d <= 0, 1.0 / band, -1.0 / (band * 1.5)), out=d)
+        np.exp(d, out=d)  # now exp(-|d| / width) with the side-specific width
+        gain = np.where(ys - (center + tilt * (xs - w / 2)) <= 0, -0.35, 0.06).astype(np.float32)
+        d *= gain * strength
+        d += 1.0
+        shade *= d
+        del d, gain
 
     # Each panel between creases gets its own slight brightness offset.
     edges = [0.0, *[p * h for p in positions], float(h)]
     for top, bottom in zip(edges[:-1], edges[1:], strict=True):
         offset = 1.0 + strength * rng.uniform(-0.03, 0.03)
-        mask = (ys >= top) & (ys < bottom)
-        shade *= np.where(mask, offset, 1.0).astype(np.float32)
+        rows = (ys[:, 0] >= top) & (ys[:, 0] < bottom)
+        shade[rows] *= offset
 
-    out = to_float(img) * shade[..., None]
-    return to_uint8(out)
+    return apply_shade(img, shade)
