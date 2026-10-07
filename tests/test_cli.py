@@ -33,7 +33,10 @@ def test_seed_reproducible_via_cli(tmp_path):
     src = make_text_pdf(tmp_path / "doc.pdf")
     main([str(src), "-o", str(tmp_path / "a.pdf"), "--seed", "9", "--dpi", "72"])
     main([str(src), "-o", str(tmp_path / "b.pdf"), "--seed", "9", "--dpi", "72"])
-    assert (tmp_path / "a.pdf").read_bytes() == (tmp_path / "b.pdf").read_bytes()
+    # pdfium writes a random /ID into every file, so compare rendered pixels, not bytes.
+    import numpy as np
+
+    assert np.array_equal(render_pdf_page(tmp_path / "a.pdf"), render_pdf_page(tmp_path / "b.pdf"))
 
 
 def test_scannizer_error_exits_1_without_traceback(tmp_path, capsys):
