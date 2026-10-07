@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+import os
+import tempfile
+from collections.abc import Iterator
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+from .assemble import write_pdf
+from .effects.color import apply_color_mode
+from .effects.fold import apply_fold
+from .effects.geometry import apply_skew
+from .effects.noise import apply_noise
+from .effects.optics import apply_blur, apply_edge_shadow, apply_unevenness
+from .effects.paper import apply_paper
+from .errors import ScannizerError
+from .options import ScanOptions
+from .presets import get_preset
+from .raster import open_pdf, render_page
+
+
+def scan(
+    src: str | os.PathLike,
+    dst: str | os.PathLike,
+    *,
+    preset: str = "normal",
+    seed: int | None = None,
+    **overrides,
+) -> None:
+    """Render every page of `src`, apply scanner effects and write an image-only PDF to `dst`.
+
+    `overrides` are ScanOptions field names and take precedence over the preset.
+    """
+    opts = get_preset(preset).replace(**overrides)
+    src_path, dst_path = Path(src), Path(dst)
+    _check_output_path(src_path, dst_path)
+
+    doc = open_pdf(src_path)
+    try:
+        count = len(doc)
+        if count == 0:
+            raise ScannizerError(f"PDF has no pages: {src_path}")
+        rngs = [np.random.default_rng(s) for s in np.random.SeedSequence(seed).spawn(count)]
+
+        def pages() -> Iterator[tuple[bytes, float, float]]:
+            for index in range(count):
+                width, height = doc.get_page_size(index)
+                _check_page_fits(index, width, height, opts.dpi)
+                img = render_page(doc, index, opts.dpi)
+                out = process_page(img, rngs[index], opts)
+                yield encode_jpeg(out, opts.jpeg_quality), width, height
+
+        _write_atomically(pages(), dst_path)
+    finally:
+        doc.close()
+
+
+def process_page(img: np.ndarray, rng: np.random.Generator, opts: ScanOptions) -> np.ndarray:
+    """Apply the effects in physical order: paper → fold → skew → optics → noise → colour."""
+    img = apply_paper(img, rng, opts.paper, opts.dpi)
+    img = apply_fold(img, rng, opts.fold, opts.fold_strength, opts.dpi)
+    img = apply_skew(img, rng, opts.skew)
+    img = apply_edge_shadow(img, rng, opts.edge_shadow, opts.dpi)
+    img = apply_unevenness(img, rng, opts.unevenness)
+    img = apply_blur(img, opts.blur, opts.dpi)
+    img = apply_noise(img, rng, opts.noise)
+    return apply_color_mode(img, opts.color)
+
+
+def encode_jpeg(img: np.ndarray, quality: int) -> bytes:
+    """JPEG-encode an RGB (H, W, 3) or grey (H, W) uint8 array."""
+    if img.ndim == 3:
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, int(quality)])
+    if not ok:
+        raise ScannizerError("JPEG encoding failed")
+    return buf.tobytes()
+
+
+def _check_output_path(src: Path, dst: Path) -> None:
+    if dst.is_dir():
+        raise ScannizerError(f"output path is a directory: {dst}")
+    if not dst.parent.is_dir():
+        raise ScannizerError(f"output directory does not exist: {dst.parent}")
+    # samefile() compares inodes, so it also catches case-insensitive filesystems
+    # where "in.pdf" and "IN.pdf" resolve to different strings but the same file.
+    same = (
+        os.path.samefile(src, dst)
+        if src.exists() and dst.exists()
+        else src.resolve() == dst.resolve()
+    )
+    if same:
+        raise ScannizerError("output path is the same file as the input")
+
+
+# JPEG cannot store an image wider or taller than this.
+_MAX_JPEG_SIDE = 65_535
+
+
+def _check_page_fits(index: int, width: float, height: float, dpi: int) -> None:
+    px_w, px_h = width * dpi / 72, height * dpi / 72
+    if max(px_w, px_h) > _MAX_JPEG_SIDE:
+        raise ScannizerError(
+            f"page {index + 1} is too large to encode at {dpi} DPI "
+            f"({px_w:.0f}×{px_h:.0f} px, max {_MAX_JPEG_SIDE}); lower --dpi"
+        )
+
+
+def _write_atomically(pages: Iterator[tuple[bytes, float, float]], dst: Path) -> None:
+    """Write to a temp file next to `dst`, then rename, so a crash never leaves a half PDF."""
+    try:
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{dst.name}.", suffix=".tmp", dir=dst.parent)
+    except OSError as exc:
+        raise ScannizerError(f"cannot write {dst}: {exc.strerror}") from exc
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        write_pdf(pages, tmp)
+        # mkstemp creates 0600 files; give the output the permissions a normal file would get.
+        umask = os.umask(0)
+        os.umask(umask)
+        os.chmod(tmp, 0o666 & ~umask)
+        os.replace(tmp, dst)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        raise ScannizerError(f"cannot write {dst}: {exc.strerror}") from exc
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
