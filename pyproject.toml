@@ -9,7 +9,7 @@ description = "Make a clean PDF look like it was scanned."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-authors = [{ name = "Chizi" }]
+authors = [{ name = "Jihyo Kim" }]
 keywords = ["pdf", "scan", "scanner", "noise", "augmentation"]
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -25,7 +25,7 @@ dependencies = [
 scannizer = "scannizer.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/chizi-develop/scannizer"
+Homepage = "https://github.com/jihyo-dev/scannizer"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]

@@ -3,7 +3,7 @@
 **출력해서 스캔할 필요 없습니다.** 깨끗한 PDF를 실제 스캐너를 거친 것처럼 바꿔 주는 Python 라이브러리 + CLI.
 **Don't print it just to scan it.** A Python library + CLI that makes a clean PDF look like it went through a real scanner.
 
-🔗 **데모 / Demo:** https://chizi-develop.github.io/scannizer/
+🔗 **데모 / Demo:** https://jihyo-dev.github.io/scannizer/
 
 <p align="center">
   <img src="site/img/source.jpg" width="45%" alt="원본 PDF / original PDF">
